@@ -72,9 +72,9 @@
       margin-left: 6px;
     }
 
-    /* ★ コメントありの名前（ホバーで見える） */
+    /* ★ コメントありの名前（タップ/クリックで見える） */
     th.hasComment {
-      cursor: help;
+      cursor: pointer;
       text-decoration: underline dotted;
     }
 
@@ -284,12 +284,23 @@ async function load() {
   for (const name of userNames) {
     const c = commentMap[name];
     const cls = c ? ' class="hasComment"' : '';
-    const title = c ? ` title="${escapeAttr(c)}"` : '';
-    header += `<th data-name="${escapeAttr(name)}"${cls}${title}>${name}</th>`;
+    const comment = c ? ` data-comment="${escapeAttr(c)}"` : '';
+    const label = c ? `<span class="nameLabel">${name} 💬</span>` : name;
+    header += `<th data-name="${escapeAttr(name)}"${cls}${comment}>${label}</th>`;
   }
   if (isAdmin) header += `<th id="deleteColHeader">日程削除</th>`;
   header += `</tr>`;
   thead.innerHTML = header;
+
+  // ★ コメントはホバーではなくタップ/クリックで表示（スマホ対応）
+  //   名前部分（.nameLabel）だけに付けることで、回答編集モードで表示が
+  //   コメント編集ボタン等に差し替わった際にクリック判定がぶつからないようにする
+  document.querySelectorAll("#table thead th.hasComment .nameLabel").forEach(span => {
+    span.addEventListener("click", () => {
+      const th = span.closest("th");
+      alert(`${th.dataset.name} のコメント:\n${th.dataset.comment}`);
+    });
+  });
 
   for (const d of candidates) {
     const [datePart, timePart] = d.split(" ");
