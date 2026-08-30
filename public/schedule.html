@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日程調整</title>
+  <style>
+    *{box-sizing:border-box;}
+
+    body{
+      font-family:sans-serif;
+      margin:0;
+      background:#fbe4ec;
+      min-height:100vh;
+      padding:20px 16px;
+    }
+
+    /* ★ 中身を囲む白い角丸カード */
+    .card{
+      max-width:900px;
+      margin:0 auto;
+      background:#fff;
+      border-radius:20px;
+      padding:24px 28px;
+      box-shadow:0 2px 12px rgba(0,0,0,0.08);
+    }
+
+    /* ★ 表がはみ出す場合はカード内だけで横スクロールさせる */
+    .tableWrap{
+      overflow-x:auto;
+      -webkit-overflow-scrolling:touch;
+    }
+
+    /* ★ min-widthにして、列数が多いときは潰れず横スクロールさせる */
+    table{min-width:100%;border-collapse:collapse;}
+    th,td{border:1px solid #ddd;padding:8px;text-align:center;white-space:nowrap;}
+
+    .controls{
+      margin:10px 0;
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:8px;
+    }
+    .btn{padding:8px 12px;}
+
+    @media (max-width: 480px){
+      body{ padding:12px; }
+      .card{ padding:16px; border-radius:14px; }
+      h1{ font-size:1.3em; }
+    }
+
+    .actionCell{
+      width:80px;
+    }
+    .actionCell button{
+      display:block;
+      width:100%;
+      margin-bottom:4px;
+    }
+
+    /* ★ ハイライト用 */
+    .highlight {
+      background-color: #fff7cc;
+      font-weight: bold;
+    }
+
+    /* ★ 確定表示 */
+    .final-label {
+      color: red;
+      font-weight: bold;
+      margin-left: 6px;
+    }
+
+    /* ★ コメントありの名前（ホバーで見える） */
+    th.hasComment {
+      cursor: help;
+      text-decoration: underline dotted;
+    }
+
+    .commentBox {
+      margin-top: 4px;
+    }
+    .commentBox input {
+      width: 90px;
+    }
+    .commentToggleBtn {
+      font-size: 12px;
+      padding: 2px 6px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="card">
+
+<h1 id="title">日程調整</h1>
+
+<div id="confirmedBox" style="display:none;"></div>
+
+<div style="margin-bottom: 15px;">
+  <strong>〇：</strong>参加できる！<br>
+  <strong>△：</strong>条件次第で参加できる<br>
+  <strong>▲：</strong>できれば避けてほしい…<br>
+  <strong>×：</strong>絶対無理！<br>
+  <strong>ー：</strong>未回答
+</div>
+
+<div class="controls">
+  <select id="userNameSelect">
+    <option value="">読み込み中...</option>
+  </select>
+  <input type="text" id="userNameOtherInput" placeholder="名前を入力" style="display:none;">
+  <button class="btn" id="startAnswerBtn">回答を選択</button>
+</div>
+
+<div class="controls" id="addControls" style="display:none;">
+  <input type="date" id="newDate">
+  <input type="time" id="newTime">
+  <button class="btn" id="addBtn">候補追加</button>
+</div>
+
+<div class="tableWrap">
+<table id="table">
+  <thead></thead>
+  <tbody></tbody>
+  <tfoot></tfoot>
+</table>
+</div>
+
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const id = params.get("id");
+const adminToken = params.get("admin"); // ★ 候補日削除など管理操作用トークン（作成者のリンクにのみ付与される）
+
+// ★ JST（日本時間）の "YYYY-MM-DD HH:MM" を Googleカレンダー用のUTC時刻文字列に変換
+function toUtcCalendarString(jstDateTimeStr, addHours = 0) {
+  const [datePart, timePart] = jstDateTimeStr.split(" ");
+  const [y, m, d] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+  const utcMs = Date.UTC(y, m - 1, d, hh - 9 + addHours, mm, 0); // ★ JST=UTC+9
+  const dt = new Date(utcMs);
+  const pad = n => String(n).padStart(2, "0");
+  return `${dt.getUTCFullYear()}${pad(dt.getUTCMonth() + 1)}${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}${pad(dt.getUTCMinutes())}00Z`;
+}
+
+// ★ Googleカレンダーのクイック追加URLを組み立てる（所要時間は2時間と仮定）
+function buildGoogleCalendarUrl(title, finalDate) {
+  const start = toUtcCalendarString(finalDate);
+  const end = toUtcCalendarString(finalDate, 2);
+  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start}/${end}`;
+}
+
+// ★ HTML属性へ安全に埋め込むためのエスケープ
+function escapeAttr(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// ★ 全操作ロック/解除
+function disableAllControls(flag){
+  document.getElementById("startAnswerBtn").disabled = flag;
+  document.getElementById("addBtn").disabled = flag;
+  document.getElementById("userNameSelect").disabled = flag;
+  document.getElementById("userNameOtherInput").disabled = flag;
+  document.getElementById("newDate").disabled = flag;
+  document.getElementById("newTime").disabled = flag;
+
+  document.querySelectorAll(".editUserBtn").forEach(btn => btn.disabled = flag);
+  document.querySelectorAll(".deleteUserBtn").forEach(btn => btn.disabled = flag);
+}
+
+// ★ サーバーメンバー一覧を選択肢に反映（+ その他）
+let membersLoaded = false;
+async function loadMembers(guildId) {
+  const select = document.getElementById("userNameSelect");
+  select.innerHTML = `<option value="">選択してください</option>`;
+
+  if (guildId) {
+    try {
+      const res = await fetch(`/guild_members/${guildId}`);
+      const data = await res.json();
+      if (data.members) {
+        for (const m of data.members) {
+          const opt = document.createElement("option");
+          opt.value = m.name;
+          opt.textContent = m.name;
+          select.appendChild(opt);
+        }
+      }
+    } catch (e) {
+      console.error("メンバー取得に失敗しました", e);
+    }
+  }
+
+  const otherOpt = document.createElement("option");
+  otherOpt.value = "__other__";
+  otherOpt.textContent = "その他";
+  select.appendChild(otherOpt);
+}
+
+document.getElementById("userNameSelect").addEventListener("change", () => {
+  const isOther = document.getElementById("userNameSelect").value === "__other__";
+  document.getElementById("userNameOtherInput").style.display = isOther ? "inline-block" : "none";
+});
+
+// 表描画
+async function load() {
+  const query = adminToken ? `?admin_token=${encodeURIComponent(adminToken)}` : "";
+  const res = await fetch(`/schedule/${id}${query}`);
+  const data = await res.json();
+
+  const tbody = document.querySelector("#table tbody");
+  const thead = document.querySelector("#table thead");
+  const tfoot = document.querySelector("#table tfoot");
+
+  tbody.innerHTML = "";
+  tfoot.innerHTML = "";
+
+  // ★ タイトル表示（カスタムタイトルがある場合は「(タイトル) 日程調整」形式）
+  const scheduleTitle = data.schedule.title;
+  document.getElementById("title").textContent =
+    (!scheduleTitle || scheduleTitle === "日程調整")
+      ? "日程調整"
+      : `${scheduleTitle} 日程調整`;
+
+  // ★ 作成者本人（管理用リンク経由）のみ候補追加・日程削除を表示
+  const isAdmin = !!data.schedule.is_admin;
+  document.getElementById("addControls").style.display = isAdmin ? "" : "none";
+
+  if (!membersLoaded) {
+    membersLoaded = true;
+    loadMembers(data.schedule.guild_id);
+  }
+
+  const finalDate = data.schedule.final_date;   // ★確定日時
+
+  // ★ 確定済みならカレンダー追加リンクを表示
+  const confirmedBox = document.getElementById("confirmedBox");
+  if (finalDate) {
+    const calendarTitle = document.getElementById("title").textContent;
+    const gcalUrl = buildGoogleCalendarUrl(calendarTitle, finalDate);
+
+    confirmedBox.innerHTML = `
+      <div style="margin:12px 0; padding:12px 16px; background:#fff0f5; border-radius:12px;">
+        <strong>📌 日程が確定しました： ${finalDate}</strong>
+        <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:8px;">
+          <a href="${gcalUrl}" target="_blank" rel="noopener" class="btn" style="text-decoration:none; display:inline-block;">📅 Googleカレンダーに追加</a>
+          <a href="/schedule/${id}/calendar.ics" class="btn" style="text-decoration:none; display:inline-block;">📥 iCalで保存（iPhone等）</a>
+        </div>
+      </div>
+    `;
+    confirmedBox.style.display = "";
+  } else {
+    confirmedBox.style.display = "none";
+    confirmedBox.innerHTML = "";
+  }
+
+  // ★ 日時を昇順ソート
+  const candidates = data.candidates
+    .map(c => c.date)
+    .sort((a, b) => new Date(a) - new Date(b));
+
+  // ★ 列順固定
+  const userNames = [];
+  for (const v of data.votes) {
+    if (v.user_name && !userNames.includes(v.user_name)) {
+      userNames.push(v.user_name);
+    }
+  }
+
+  // ★ 名前ごとのコメントを引けるようにする
+  const commentMap = {};
+  for (const c of data.comments || []) {
+    commentMap[c.user_name] = c.comment;
+  }
+
+  let header = `<tr><th>日時</th>`;
+  for (const name of userNames) {
+    const c = commentMap[name];
+    const cls = c ? ' class="hasComment"' : '';
+    const title = c ? ` title="${escapeAttr(c)}"` : '';
+    header += `<th data-name="${escapeAttr(name)}"${cls}${title}>${name}</th>`;
+  }
+  if (isAdmin) header += `<th id="deleteColHeader">日程削除</th>`;
+  header += `</tr>`;
+  thead.innerHTML = header;
+
+  for (const d of candidates) {
+    const [datePart, timePart] = d.split(" ");
+    const weekday = getWeekday(datePart);
+    const display = `${datePart}(${weekday}) ${timePart}～`;
+
+    const isFinal = (finalDate === d);
+
+    let row = `<td>${display} ${isFinal ? '<span class="final-label">【確定】</span>' : ''}</td>`;
+
+    for (const name of userNames) {
+      const vote = data.votes.find(v => v.user_name === name && v.date === d);
+      const val = vote ? vote.value : "none";
+      const symbol = val === 2 ? "〇" :
+                     val === 1 ? "△" :
+                     val === 0.5 ? "▲" :
+                     val === 0 ? "×" : "ー";
+      row += `<td>${symbol}</td>`;
+    }
+
+    if (isAdmin) {
+      row += `<td class="deleteColCell"><button class="remove" data-date="${d}" ${finalDate ? "disabled" : ""}>削除</button></td>`;
+    }
+
+    const tr = document.createElement("tr");
+    tr.dataset.datetime = d;
+    tr.innerHTML = row;
+    tbody.appendChild(tr);
+  }
+
+  document.querySelectorAll(".remove").forEach(btn => {
+    btn.addEventListener("click", async e => {
+      const date = e.target.dataset.date;
+      if (!confirm(`${date} を削除しますか？`)) return;
+
+      const result = await fetch("/remove_candidate", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ schedule_id: id, date, admin_token: adminToken })
+      }).then(r => r.json());
+
+      if (!result.ok) {
+        alert("この操作は /schedule を実行した本人のみ行えます");
+        return;
+      }
+
+      load();
+    });
+  });
+
+  let foot = `<tr><td></td>`;
+  for (const name of userNames) {
+    foot += `
+      <td class="actionCell">
+        <button class="btn editUserBtn" data-name="${name}" ${finalDate ? "disabled" : ""}>編集</button>
+        <button class="btn deleteUserBtn" data-name="${name}" ${finalDate ? "disabled" : ""}>削除</button>
+      </td>`;
+  }
+  if (isAdmin) foot += `<td></td>`;
+  foot += `</tr>`;
+  tfoot.innerHTML = foot;
+
+  document.querySelectorAll(".editUserBtn").forEach(btn => {
+    btn.addEventListener("click", () => startEditMode(btn.dataset.name));
+  });
+
+  document.querySelectorAll(".deleteUserBtn").forEach(btn => {
+    btn.addEventListener("click", () => deleteUser(btn.dataset.name));
+  });
+
+  // ★ 確定済みなら全操作ロック
+  if (finalDate) {
+    disableAllControls(true);
+  }
+
+  // ★ 点数計算してハイライト
+  highlightBestCandidate(data, candidates, userNames);
+}
+
+// ★ 点数計算して最有力候補をハイライト
+function highlightBestCandidate(data, candidates, userNames) {
+  const scoreMap = {};
+
+  for (const d of candidates) {
+    let total = 0;
+    for (const name of userNames) {
+      const vote = data.votes.find(v => v.user_name === name && v.date === d);
+      if (vote && vote.value !== null) {
+        total += vote.value;
+      }
+    }
+    scoreMap[d] = total;
+  }
+
+  const scores = Object.values(scoreMap);
+  const maxScore = Math.max(...scores);
+
+  // ★ 全員未回答ならハイライトなし
+  if (maxScore === 0) return;
+
+  document.querySelectorAll("#table tbody tr").forEach(tr => {
+    const datetime = tr.dataset.datetime;
+    if (scoreMap[datetime] === maxScore) {
+      tr.classList.add("highlight");
+    }
+  });
+}
+
+// 回答モード開始
+document.getElementById("startAnswerBtn").addEventListener("click", async () => {
+  const res = await fetch(`/schedule/${id}`);
+  const data = await res.json();
+
+  if (data.schedule.final_date) {
+    alert("この日程は確定済みのため回答できません");
+    return;
+  }
+
+  const selectValue = document.getElementById("userNameSelect").value;
+  const name = selectValue === "__other__"
+    ? document.getElementById("userNameOtherInput").value.trim()
+    : selectValue.trim();
+
+  if (!name) return alert("名前を選択または入力してください");
+
+  const userNamesCheck = [];
+  for (const v of data.votes) {
+    if (v.user_name && !userNamesCheck.includes(v.user_name)) {
+      userNamesCheck.push(v.user_name);
+    }
+  }
+
+  if (userNamesCheck.includes(name)) {
+    alert("その名前はすでに登録されています。別の名前を入力してください。");
+    return;
+  }
+
+  disableAllControls(true);
+
+  const newUserId = "u_" + name + "_" + Math.random().toString(36).slice(2,9);
+  localStorage.setItem("user_name", name);
+  localStorage.setItem("user_id", newUserId);
+
+  await load();
+  disableAllControls(true); // ★ load()で編集/削除ボタンが再生成されロックが解除されるため再度かけ直す
+  startAnswerMode(name);
+});
+
+// ★ 名前セル内にコメント追加UIを組み込む（回答モード・編集モード共通）
+function setupCommentUI(th, name, existingComment) {
+  th.innerHTML = `
+    <div>${name}</div>
+    <button type="button" class="btn commentToggleBtn">${existingComment ? "コメントを編集" : "コメントを追加"}</button>
+    <div class="commentBox" style="display:none;">
+      <input type="text" class="commentInput" placeholder="コメント" value="${escapeAttr(existingComment || "")}">
+      <button type="button" class="btn commentConfirmBtn">確定</button>
+    </div>
+  `;
+
+  th.querySelector(".commentToggleBtn").addEventListener("click", () => {
+    th.querySelector(".commentBox").style.display = "block";
+    th.querySelector(".commentToggleBtn").style.display = "none";
+  });
+
+  th.querySelector(".commentConfirmBtn").addEventListener("click", () => {
+    const val = th.querySelector(".commentInput").value.trim();
+    th.querySelector(".commentBox").style.display = "none";
+    const toggleBtn = th.querySelector(".commentToggleBtn");
+    toggleBtn.textContent = val ? "コメントを編集" : "コメントを追加";
+    toggleBtn.style.display = "inline-block";
+  });
+}
+
+// 回答モード（仮の列追加）
+function startAnswerMode(name) {
+  const table = document.getElementById("table");
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  const headerRow = thead.querySelector("tr");
+
+  const exists = [...headerRow.children].some(th => th.dataset.name === name);
+  if (!exists) {
+    const th = document.createElement("th");
+    th.dataset.name = name;
+    setupCommentUI(th, name, "");
+
+    const deleteHeaderCell = document.getElementById("deleteColHeader");
+    if (deleteHeaderCell) {
+      headerRow.insertBefore(th, deleteHeaderCell);
+    } else {
+      headerRow.appendChild(th);
+    }
+  }
+
+  const rows = tbody.querySelectorAll("tr");
+
+  rows.forEach(tr => {
+    const datetime = tr.dataset.datetime;
+
+    const deleteCell = tr.querySelector(".deleteColCell");
+    const td = document.createElement("td");
+    td.classList.add("answerInput");
+
+    td.innerHTML = `
+      <select data-date="${datetime}" class="answerSelect">
+        <option value="none">ー</option>
+        <option value="2">〇</option>
+        <option value="1">△</option>
+        <option value="0.5">▲</option>
+        <option value="0">×</option>
+      </select>
+    `;
+
+    if (deleteCell) {
+      tr.insertBefore(td, deleteCell);
+    } else {
+      tr.appendChild(td);
+    }
+  });
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.textContent = "回答を確定";
+  confirmBtn.classList.add("btn");
+  confirmBtn.id = "confirmAnswersBtn";
+  document.querySelector(".card").appendChild(confirmBtn);
+
+  confirmBtn.addEventListener("click", submitAnswers);
+}
+
+// 回答確定
+async function submitAnswers() {
+  const userName = localStorage.getItem("user_name");
+  const userId = localStorage.getItem("user_id");
+
+  const selects = document.querySelectorAll(".answerSelect");
+
+  const hasNone = [...selects].some(s => s.value === "none");
+  if (hasNone) {
+    if (!confirm("未回答の項目がありますが大丈夫ですか？")) return;
+  }
+
+  const votes = [...selects].map(s => ({
+    date: s.dataset.date,
+    value: s.value === "none" ? null : Number(s.value)
+  }));
+
+  const commentInput = document.querySelector(`th[data-name="${CSS.escape(userName)}"] .commentInput`);
+  const comment = commentInput ? commentInput.value.trim() : "";
+
+  await fetch("/submit_votes", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      schedule_id: id,
+      user_id: userId,
+      user_name: userName,
+      votes,
+      comment
+    })
+  });
+
+  disableAllControls(false);
+
+  document.getElementById("confirmAnswersBtn").remove();
+  document.querySelectorAll(".answerInput").forEach(e => e.remove());
+
+  load();
+}
+
+// 編集モード
+async function startEditMode(name) {
+  const res = await fetch(`/schedule/${id}`);
+  const data = await res.json();
+
+  if (data.schedule.final_date) {
+    alert("この日程は確定済みのため編集できません");
+    return;
+  }
+
+  disableAllControls(true);
+
+  const tbody = document.querySelector("#table tbody");
+  const thead = document.querySelector("#table thead");
+
+  const headerRow = thead.querySelector("tr");
+  const index = [...headerRow.children].findIndex(th => th.dataset.name === name);
+
+  const existingComment = (data.comments.find(c => c.user_name === name) || {}).comment || "";
+  setupCommentUI(headerRow.children[index], name, existingComment);
+
+  const rows = tbody.querySelectorAll("tr");
+
+  rows.forEach(tr => {
+    const datetime = tr.dataset.datetime;
+    const td = tr.children[index];
+
+    const vote = data.votes.find(v => v.user_name === name && v.date === datetime);
+    const currentValue = vote ? vote.value : "none";
+
+    td.innerHTML = `
+      <select data-date="${datetime}" class="answerSelect">
+        <option value="none">ー</option>
+        <option value="2">〇</option>
+        <option value="1">△</option>
+        <option value="0.5">▲</option>
+        <option value="0">×</option>
+      </select>
+    `;
+
+    const select = td.querySelector("select");
+    select.value = currentValue === null ? "none" : String(currentValue);
+  });
+
+  const old = document.getElementById("confirmEditBtn");
+  if (old) old.remove();
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.textContent = "回答を確定";
+  confirmBtn.classList.add("btn");
+  confirmBtn.id = "confirmEditBtn";
+  document.querySelector(".card").appendChild(confirmBtn);
+
+  confirmBtn.addEventListener("click", () => submitEdit(name, index));
+}
+
+// 編集確定
+async function submitEdit(name, index) {
+  const selects = document.querySelectorAll(".answerSelect");
+
+  const hasNone = [...selects].some(s => s.value === "none");
+  if (hasNone) {
+    if (!confirm("未回答の項目がありますが大丈夫ですか？")) return;
+  }
+
+  const votes = [...selects].map(s => ({
+    date: s.dataset.date,
+    value: s.value === "none" ? null : Number(s.value)
+  }));
+
+  const res = await fetch(`/schedule/${id}`);
+  const data = await res.json();
+
+  const userVote = data.votes.find(v => v.user_name === name);
+  const userId = userVote.user_id;
+
+  const commentInput = document.querySelector(`th[data-name="${CSS.escape(name)}"] .commentInput`);
+  const comment = commentInput ? commentInput.value.trim() : "";
+
+  await fetch("/submit_votes", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      schedule_id: id,
+      user_id: userId,
+      user_name: name,
+      votes,
+      comment
+    })
+  });
+
+  disableAllControls(false);
+
+  document.getElementById("confirmEditBtn").remove();
+  load();
+}
+
+// 回答者削除
+async function deleteUser(name) {
+  const res = await fetch(`/schedule/${id}`);
+  const data = await res.json();
+
+  if (data.schedule.final_date) {
+    alert("この日程は確定済みのため削除できません");
+    return;
+  }
+
+  if (!confirm(`${name} の回答を削除してよろしいですか？`)) return;
+
+  const userVotes = data.votes.filter(v => v.user_name === name);
+
+  for (const v of userVotes) {
+    await fetch("/submit_votes", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        schedule_id: id,
+        user_id: v.user_id,
+        user_name: name,
+        votes: []
+      })
+    });
+  }
+
+  load();
+}
+
+// 日付＋時刻を指定して候補追加
+document.getElementById("addBtn").addEventListener("click", async () => {
+  const res = await fetch(`/schedule/${id}`);
+  const data = await res.json();
+
+  if (data.schedule.final_date) {
+    alert("この日程は確定済みのため候補追加できません");
+    return;
+  }
+
+  const d = document.getElementById("newDate").value;
+  if (!d) return alert("日付を選択してください");
+
+  const t = document.getElementById("newTime").value;
+  if (!t) return alert("時刻を選択してください");
+
+  const datetime = `${d} ${t}`;
+
+  const result = await fetch("/add_candidate", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ schedule_id: id, date: datetime, admin_token: adminToken })
+  }).then(r => r.json());
+
+  if (!result.ok && result.message === "duplicate") {
+    alert(`${datetime} はすでに候補にあります`);
+  } else if (!result.ok && result.message === "forbidden") {
+    alert("この操作は /schedule を実行した本人のみ行えます");
+    return;
+  }
+
+  load();
+});
+
+function getWeekday(dateStr) {
+  const d = new Date(dateStr);
+  return ["日","月","火","水","木","金","土"][d.getDay()];
+}
+
+load();
+</script>
+</body>
+</html>
