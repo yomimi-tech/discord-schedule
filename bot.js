@@ -13,7 +13,8 @@ import {
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  PermissionsBitField
 } from "discord.js";
 
 const client = new Client({
@@ -35,6 +36,41 @@ const ALLOWED_GUILD_IDS = new Set(
 
 function isGuildAllowed(guildId) {
   return !!guildId && ALLOWED_GUILD_IDS.has(guildId);
+}
+
+// ★ 未承認サーバーから退出する前に、投稿できそうなチャンネルへ理由を残す
+const UNAPPROVED_MESSAGE =
+  "このサーバーは承認されていないため、Botを使用することができません。\n" +
+  "使用するにはBot作成者に連絡し承認を得てください。\n\n" +
+  "作成者：yomimi\n" +
+  "連絡先：yomimi0403";
+
+async function notifyBeforeLeaving(guild) {
+  try {
+    let channel = guild.systemChannel;
+    const canSend = (ch) =>
+      ch?.isTextBased?.() &&
+      ch.permissionsFor(guild.members.me)?.has(PermissionsBitField.Flags.SendMessages);
+
+    if (!canSend(channel)) {
+      channel = guild.channels.cache.find(canSend);
+    }
+    if (channel) {
+      await channel.send(UNAPPROVED_MESSAGE);
+    }
+  } catch (e) {
+    console.error(`[bot.js] 未承認サーバーへの通知送信に失敗しました (${guild.id}):`, e);
+  }
+}
+
+async function leaveUnapprovedGuild(guild) {
+  console.warn(`[bot.js] 未承認サーバーのため退出します: ${guild.name} (${guild.id})`);
+  await notifyBeforeLeaving(guild);
+  try {
+    await guild.leave();
+  } catch (e) {
+    console.error("[bot.js] guild.leave()に失敗しました:", e);
+  }
 }
 
 // ★ JST（日本時間）の "YYYY-MM-DD HH:MM" をGoogleカレンダー用のUTC時刻文字列に変換
@@ -61,12 +97,7 @@ client.once("clientReady", async () => {
   // ★ 起動時点ですでに未承認サーバーに参加している場合も退出しておく
   for (const guild of client.guilds.cache.values()) {
     if (!isGuildAllowed(guild.id)) {
-      console.warn(`[bot.js] 未承認サーバーのため退出します: ${guild.name} (${guild.id})`);
-      try {
-        await guild.leave();
-      } catch (e) {
-        console.error("[bot.js] guild.leave()に失敗しました:", e);
-      }
+      await leaveUnapprovedGuild(guild);
     }
   }
 });
@@ -74,12 +105,7 @@ client.once("clientReady", async () => {
 // ★ 新しいサーバーに追加された瞬間に、承認済みかどうかをチェックする
 client.on("guildCreate", async (guild) => {
   if (!isGuildAllowed(guild.id)) {
-    console.warn(`[bot.js] 未承認サーバーに追加されたため退出します: ${guild.name} (${guild.id})`);
-    try {
-      await guild.leave();
-    } catch (e) {
-      console.error("[bot.js] guild.leave()に失敗しました:", e);
-    }
+    await leaveUnapprovedGuild(guild);
   } else {
     console.log(`[bot.js] 承認済みサーバーに追加されました: ${guild.name} (${guild.id})`);
   }
