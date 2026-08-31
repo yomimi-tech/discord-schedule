@@ -27,6 +27,16 @@ const BASE_URL = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
 //   ポート番号だけはapi.js側と揃うようPORT環境変数を参照する
 const INTERNAL_API_URL = `http://127.0.0.1:${process.env.PORT || 3000}`;
 
+// ★ 承認したサーバーだけで動かすための許可リスト（カンマ区切りのギルドID）
+//   未設定の場合は安全側に倒して「どのサーバーでも許可しない」扱いにする
+const ALLOWED_GUILD_IDS = new Set(
+  (process.env.ALLOWED_GUILD_IDS || "").split(",").map(s => s.trim()).filter(Boolean)
+);
+
+function isGuildAllowed(guildId) {
+  return !!guildId && ALLOWED_GUILD_IDS.has(guildId);
+}
+
 // ★ JST（日本時間）の "YYYY-MM-DD HH:MM" をGoogleカレンダー用のUTC時刻文字列に変換
 function toUtcCalendarString(jstDateTimeStr, addHours = 0) {
   const [datePart, timePart] = jstDateTimeStr.split(" ");
@@ -45,8 +55,34 @@ function buildGoogleCalendarUrl(title, finalDate) {
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${start}/${end}`;
 }
 
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
   console.log("Bot ready");
+
+  // ★ 起動時点ですでに未承認サーバーに参加している場合も退出しておく
+  for (const guild of client.guilds.cache.values()) {
+    if (!isGuildAllowed(guild.id)) {
+      console.warn(`[bot.js] 未承認サーバーのため退出します: ${guild.name} (${guild.id})`);
+      try {
+        await guild.leave();
+      } catch (e) {
+        console.error("[bot.js] guild.leave()に失敗しました:", e);
+      }
+    }
+  }
+});
+
+// ★ 新しいサーバーに追加された瞬間に、承認済みかどうかをチェックする
+client.on("guildCreate", async (guild) => {
+  if (!isGuildAllowed(guild.id)) {
+    console.warn(`[bot.js] 未承認サーバーに追加されたため退出します: ${guild.name} (${guild.id})`);
+    try {
+      await guild.leave();
+    } catch (e) {
+      console.error("[bot.js] guild.leave()に失敗しました:", e);
+    }
+  } else {
+    console.log(`[bot.js] 承認済みサーバーに追加されました: ${guild.name} (${guild.id})`);
+  }
 });
 
 // ★ 想定外の例外でBot全体が落ちないようにする最終防衛ライン
@@ -76,9 +112,15 @@ async function safeReply(interaction, message) {
 }
 
 // ★ 各interactionCreateハンドラをtry/catchで包み、1件のエラーでBot全体が落ちないようにする
+//   ★ 加えて、承認リストにないサーバーからの操作はここで一律拒否する
 function safeHandler(fn) {
   return async (interaction) => {
     try {
+      if (!isGuildAllowed(interaction.guildId)) {
+        console.warn(`[bot.js] 未承認サーバーからの操作を拒否しました: guildId=${interaction.guildId}`);
+        await safeReply(interaction, "このサーバーではこのBotは利用できません。");
+        return;
+      }
       await fn(interaction);
     } catch (err) {
       console.error("[bot.js] Interaction処理中にエラーが発生しました:", err);
