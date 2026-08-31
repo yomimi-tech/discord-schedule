@@ -745,4 +745,5 @@ client.on("interactionCreate", safeHandler(async (interaction) => {
   }
 }));
 
+// ★ ボリューム再アタッチ確認用の空コミット代わり
 client.login(process.env.DISCORD_BOT_TOKEN);
