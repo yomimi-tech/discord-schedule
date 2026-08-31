@@ -45,13 +45,13 @@ const UNAPPROVED_MESSAGE =
   "恐れ入りますが、このBotはサーバーから速やかに退出します。\n" +
   "使用するには作成者に連絡し、承認を得てください。\n\n" +
   "作成者：yomimi\n" +
-  "連絡先：yomi36787@gmail.com（yomitechサーバーの方は直接yomimiにメンションいただいてもかまいません）\n\n" +
+  "連絡先：yomi36787@gmail.com（yomimitechサーバーの方は直接yomimiにメンションいただいてもかまいません）\n\n" +
   "**【Error】**\n" +
   "This server has not been approved, so this bot cannot be used here.\n" +
   "The bot will now leave this server.\n" +
   "To use it, please contact the creator and request approval.\n\n" +
   "Creator: yomimi\n" +
-  "Contact: yomi36787@gmail.com (members of the yomitech server may also mention yomimi directly)";
+  "Contact: yomi36787@gmail.com (members of the yomimitech server may also mention yomimi directly)";
 
 async function notifyBeforeLeaving(guild) {
   try {
