@@ -41,16 +41,12 @@ function isGuildAllowed(guildId) {
 // ★ 未承認サーバーから退出する前に、投稿できそうなチャンネルへ理由を残す
 const UNAPPROVED_MESSAGE =
   "**【エラー】**\n" +
-  "このサーバーは承認されていないため、Botを使用することができません。\n" +
-  "恐れ入りますが、このBotはサーバーから速やかに退出します。\n" +
-  "使用するには作成者に連絡し、承認を得てください。\n\n" +
-  "作成者：yomimi\n" +
+  "このサーバーは承認されていないか、承認状態に異常が発生しました。\n" +
+  "作成者(yomimi)に連絡してください。\n\n" +
   "連絡先：yomi36787@gmail.com（yomimitechサーバーの方は直接yomimiにメンションいただいてもかまいません）\n\n" +
   "**【Error】**\n" +
-  "This server has not been approved, so this bot cannot be used here.\n" +
-  "The bot will now leave this server.\n" +
-  "To use it, please contact the creator and request approval.\n\n" +
-  "Creator: yomimi\n" +
+  "This server is either not approved, or an issue occurred with its approval status.\n" +
+  "Please contact the creator (yomimi).\n\n" +
   "Contact: yomi36787@gmail.com (members of the yomimitech server may also mention yomimi directly)";
 
 async function notifyBeforeLeaving(guild) {
